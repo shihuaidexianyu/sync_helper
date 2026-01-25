@@ -5,6 +5,7 @@ A small interactive CLI that wraps `rsync` for fast, resumable uploads. It store
 ## Features
 
 - Interactive menu to select or add servers
+- Edit or delete existing server profiles
 - Simple config stored in the OS config directory
 - Path sanitization for drag-and-drop (strips quotes)
 - Uses `rsync` directly with inherited output for native progress
@@ -34,12 +35,13 @@ On first run, you'll be prompted to add a server profile:
 - Alias: a friendly name (e.g. "prod")
 - User: SSH username
 - Host: IP or domain
+- Port: SSH port (defaults to 22)
 - Target directory: remote destination path
 
 Then enter a local file or folder path (you can drag it into the terminal). The tool will run:
 
 ```bash
-rsync -avzP <source> <user>@<host>:<target_dir>
+rsync -avzP -e "ssh -p <port>" <source> <user>@<host>:<target_dir>
 ```
 
 ## Config location

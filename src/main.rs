@@ -12,6 +12,8 @@ struct ServerProfile {
     alias: String,
     user: String,
     host: String,
+    #[serde(default = "default_ssh_port")]
+    port: u16,
     target_dir: String,
 }
 
@@ -94,26 +96,61 @@ fn save_config(path: &Path, config: &AppConfig) -> Result<()> {
 }
 
 fn select_server(config: &mut AppConfig, path: &Path) -> Result<ServerProfile> {
-    let mut items: Vec<String> = config
-        .servers
-        .iter()
-        .map(|s| s.alias.clone())
-        .collect();
-    items.push(String::from("+ Add new server"));
+    loop {
+        let mut items: Vec<String> = config
+            .servers
+            .iter()
+            .map(|s| s.alias.clone())
+            .collect();
+        items.push(String::from("+ Add new server"));
 
-    let selection = Select::new()
-        .with_prompt("Select a server")
-        .items(&items)
-        .default(0)
-        .interact()?;
+        let selection = Select::new()
+            .with_prompt("Select a server")
+            .items(&items)
+            .default(0)
+            .interact()?;
 
-    if selection == items.len() - 1 {
-        let server = create_server_wizard()?;
-        config.servers.push(server.clone());
-        save_config(path, config)?;
-        Ok(server)
-    } else {
-        Ok(config.servers[selection].clone())
+        if selection == items.len() - 1 {
+            let server = create_server_wizard()?;
+            config.servers.push(server.clone());
+            save_config(path, config)?;
+            return Ok(server);
+        }
+
+        let existing = config.servers[selection].clone();
+        let actions = ["Use this server", "Edit", "Delete", "Back"];
+        let action = Select::new()
+            .with_prompt(format!("{} selected", existing.alias))
+            .items(&actions)
+            .default(0)
+            .interact()?;
+
+        match action {
+            0 => return Ok(existing),
+            1 => {
+                let updated = edit_server_wizard(&existing)?;
+                config.servers[selection] = updated.clone();
+                save_config(path, config)?;
+                return Ok(updated);
+            }
+            2 => {
+                let confirmed = Confirm::new()
+                    .with_prompt(format!("Delete {}?", existing.alias))
+                    .default(false)
+                    .interact()?;
+                if confirmed {
+                    config.servers.remove(selection);
+                    save_config(path, config)?;
+                    if config.servers.is_empty() {
+                        let server = create_server_wizard()?;
+                        config.servers.push(server.clone());
+                        save_config(path, config)?;
+                        return Ok(server);
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -121,19 +158,71 @@ fn create_server_wizard() -> Result<ServerProfile> {
     let alias = prompt_non_empty("Alias")?;
     let user = prompt_non_empty("User")?;
     let host = prompt_non_empty("Host")?;
+    let port = prompt_port()?;
     let target_dir = prompt_non_empty("Target directory")?;
 
     Ok(ServerProfile {
         alias,
         user,
         host,
+        port,
         target_dir,
     })
+}
+
+fn edit_server_wizard(existing: &ServerProfile) -> Result<ServerProfile> {
+    let alias = prompt_with_default("Alias", &existing.alias)?;
+    let user = prompt_with_default("User", &existing.user)?;
+    let host = prompt_with_default("Host", &existing.host)?;
+    let port = prompt_port_with_default(existing.port)?;
+    let target_dir = prompt_with_default("Target directory", &existing.target_dir)?;
+
+    Ok(ServerProfile {
+        alias,
+        user,
+        host,
+        port,
+        target_dir,
+    })
+}
+
+fn prompt_port() -> Result<u16> {
+    let port: u16 = Input::new()
+        .with_prompt("Port")
+        .default(default_ssh_port())
+        .interact_text()?;
+    Ok(port)
+}
+
+fn prompt_port_with_default(default_port: u16) -> Result<u16> {
+    let port: u16 = Input::new()
+        .with_prompt("Port")
+        .default(default_port)
+        .interact_text()?;
+    Ok(port)
+}
+
+fn default_ssh_port() -> u16 {
+    22
 }
 
 fn prompt_non_empty(label: &str) -> Result<String> {
     loop {
         let value: String = Input::new().with_prompt(label).interact_text()?;
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed.to_string());
+        }
+        println!("{}", style("Value cannot be empty.").yellow());
+    }
+}
+
+fn prompt_with_default(label: &str, default: &str) -> Result<String> {
+    loop {
+        let value: String = Input::new()
+            .with_prompt(label)
+            .default(default.to_string())
+            .interact_text()?;
         let trimmed = value.trim();
         if !trimmed.is_empty() {
             return Ok(trimmed.to_string());
@@ -173,6 +262,8 @@ fn run_rsync(server: &ServerProfile, source: &str) -> Result<()> {
 
     let status = Command::new("rsync")
         .arg("-avzP")
+        .arg("-e")
+        .arg(format!("ssh -p {}", server.port))
         .arg(source)
         .arg(destination)
         .stdout(Stdio::inherit())
