@@ -9,12 +9,15 @@ use std::process::{Command, Stdio};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct ServerProfile {
-    alias: String,
     user: String,
     host: String,
-    #[serde(default = "default_ssh_port")]
-    port: u16,
-    target_dir: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+enum TransferMode {
+    Push,
+    Pull,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -35,8 +38,14 @@ fn main() -> Result<()> {
     }
 
     let server = select_server(&mut config, &config_path)?;
-    let source = prompt_source_path()?;
-    run_rsync(&server, &source)?;
+    let mode = prompt_transfer_mode(TransferMode::Push)?;
+    let port = prompt_port()?;
+    let remote_dir = prompt_non_empty("Remote directory")?;
+    let local_path = match mode {
+        TransferMode::Push => prompt_path("Enter local source path (or drag it here)")?,
+        TransferMode::Pull => prompt_path("Enter local destination directory")?,
+    };
+    run_rsync(&server, mode, port, &local_path, &remote_dir)?;
 
     Ok(())
 }
@@ -100,7 +109,7 @@ fn select_server(config: &mut AppConfig, path: &Path) -> Result<ServerProfile> {
         let mut items: Vec<String> = config
             .servers
             .iter()
-            .map(|s| s.alias.clone())
+            .map(server_label)
             .collect();
         items.push(String::from("+ Add new server"));
 
@@ -118,9 +127,10 @@ fn select_server(config: &mut AppConfig, path: &Path) -> Result<ServerProfile> {
         }
 
         let existing = config.servers[selection].clone();
+        let label = server_label(&existing);
         let actions = ["Use this server", "Edit", "Delete", "Back"];
         let action = Select::new()
-            .with_prompt(format!("{} selected", existing.alias))
+            .with_prompt(format!("{} selected", label))
             .items(&actions)
             .default(0)
             .interact()?;
@@ -135,7 +145,7 @@ fn select_server(config: &mut AppConfig, path: &Path) -> Result<ServerProfile> {
             }
             2 => {
                 let confirmed = Confirm::new()
-                    .with_prompt(format!("Delete {}?", existing.alias))
+                    .with_prompt(format!("Delete {}?", label))
                     .default(false)
                     .interact()?;
                 if confirmed {
@@ -155,34 +165,44 @@ fn select_server(config: &mut AppConfig, path: &Path) -> Result<ServerProfile> {
 }
 
 fn create_server_wizard() -> Result<ServerProfile> {
-    let alias = prompt_non_empty("Alias")?;
     let user = prompt_non_empty("User")?;
     let host = prompt_non_empty("Host")?;
-    let port = prompt_port()?;
-    let target_dir = prompt_non_empty("Target directory")?;
 
     Ok(ServerProfile {
-        alias,
         user,
         host,
-        port,
-        target_dir,
     })
 }
 
 fn edit_server_wizard(existing: &ServerProfile) -> Result<ServerProfile> {
-    let alias = prompt_with_default("Alias", &existing.alias)?;
     let user = prompt_with_default("User", &existing.user)?;
     let host = prompt_with_default("Host", &existing.host)?;
-    let port = prompt_port_with_default(existing.port)?;
-    let target_dir = prompt_with_default("Target directory", &existing.target_dir)?;
 
     Ok(ServerProfile {
-        alias,
         user,
         host,
-        port,
-        target_dir,
+    })
+}
+
+fn server_label(server: &ServerProfile) -> String {
+    format!("{}@{}", server.user, server.host)
+}
+
+fn prompt_transfer_mode(default_mode: TransferMode) -> Result<TransferMode> {
+    let items = ["push (local → remote)", "pull (local ← remote)"];
+    let default_index = match default_mode {
+        TransferMode::Push => 0,
+        TransferMode::Pull => 1,
+    };
+    let selection = Select::new()
+        .with_prompt("Transfer mode")
+        .items(&items)
+        .default(default_index)
+        .interact()?;
+    Ok(if selection == 0 {
+        TransferMode::Push
+    } else {
+        TransferMode::Pull
     })
 }
 
@@ -190,14 +210,6 @@ fn prompt_port() -> Result<u16> {
     let port: u16 = Input::new()
         .with_prompt("Port")
         .default(default_ssh_port())
-        .interact_text()?;
-    Ok(port)
-}
-
-fn prompt_port_with_default(default_port: u16) -> Result<u16> {
-    let port: u16 = Input::new()
-        .with_prompt("Port")
-        .default(default_port)
         .interact_text()?;
     Ok(port)
 }
@@ -231,10 +243,10 @@ fn prompt_with_default(label: &str, default: &str) -> Result<String> {
     }
 }
 
-fn prompt_source_path() -> Result<String> {
+fn prompt_path(prompt: &str) -> Result<String> {
     loop {
         let raw: String = Input::new()
-            .with_prompt("Enter a file/folder path (or drag it here)")
+            .with_prompt(prompt)
             .interact_text()?;
         let cleaned = sanitize_path(&raw);
         if cleaned.is_empty() {
@@ -257,13 +269,28 @@ fn sanitize_path(input: &str) -> String {
     trimmed.to_string()
 }
 
-fn run_rsync(server: &ServerProfile, source: &str) -> Result<()> {
-    let destination = format!("{}@{}:{}", server.user, server.host, server.target_dir);
+fn run_rsync(
+    server: &ServerProfile,
+    mode: TransferMode,
+    port: u16,
+    local_path: &str,
+    remote_dir: &str,
+) -> Result<()> {
+    let (source, destination) = match mode {
+        TransferMode::Push => {
+            let destination = format!("{}@{}:{}", server.user, server.host, remote_dir);
+            (local_path.to_string(), destination)
+        }
+        TransferMode::Pull => {
+            let source = format!("{}@{}:{}", server.user, server.host, remote_dir);
+            (source, local_path.to_string())
+        }
+    };
 
     let status = Command::new("rsync")
         .arg("-avzP")
         .arg("-e")
-        .arg(format!("ssh -p {}", server.port))
+    .arg(format!("ssh -p {}", port))
         .arg(source)
         .arg(destination)
         .stdout(Stdio::inherit())

@@ -1,11 +1,12 @@
 # rup
 
-A small interactive CLI that wraps `rsync` for fast, resumable uploads. It stores server profiles locally, lets you pick one from a menu, and then runs `rsync -avzP` with native progress output.
+A small interactive CLI that wraps `rsync` for fast, resumable uploads. It stores minimal server profiles locally (user + host), lets you pick one from a menu, and then runs `rsync -avzP` with native progress output.
 
 ## Features
 
 - Interactive menu to select or add servers
 - Edit or delete existing server profiles
+- Supports push (local → remote) and pull (local ← remote) modes per run
 - Simple config stored in the OS config directory
 - Path sanitization for drag-and-drop (strips quotes)
 - Uses `rsync` directly with inherited output for native progress
@@ -32,16 +33,19 @@ cargo run
 
 On first run, you'll be prompted to add a server profile:
 
-- Alias: a friendly name (e.g. "prod")
 - User: SSH username
 - Host: IP or domain
-- Port: SSH port (defaults to 22)
-- Target directory: remote destination path
 
-Then enter a local file or folder path (you can drag it into the terminal). The tool will run:
+The app only saves the user and host. Port, transfer mode, and paths are chosen each run.
+
+Then select the transfer mode, enter the port, and provide both paths. The tool will run:
 
 ```bash
-rsync -avzP -e "ssh -p <port>" <source> <user>@<host>:<target_dir>
+# push mode
+rsync -avzP -e "ssh -p <port>" <local_source> <user>@<host>:<remote_dir>
+
+# pull mode
+rsync -avzP -e "ssh -p <port>" <user>@<host>:<remote_dir> <local_destination>
 ```
 
 ## Config location
