@@ -1,4 +1,4 @@
-# rup
+# sync-helper
 
 A small interactive CLI that wraps `rsync` for fast, resumable uploads. It stores lightweight server profiles locally, lets you pick one from a menu, and then runs `rsync -avzP` with native progress output.
 
@@ -26,7 +26,7 @@ A small interactive CLI that wraps `rsync` for fast, resumable uploads. It store
 cargo build --release
 ```
 
-Binary will be at `target/release/rup`.
+Binary will be at `target/release/sync-helper`.
 
 ## Usage
 
@@ -65,9 +65,9 @@ rsync -avzP -e "ssh -p <port>" <user>@<host>:<remote_dir> <local_destination>
 
 The config file is stored at the OS standard config directory for this app:
 
-- Windows: `%APPDATA%\rup\config.toml`
-- macOS: `~/Library/Application Support/rup/config.toml`
-- Linux: `~/.config/rup/config.toml`
+- Windows: `%APPDATA%\sync-helper\config.toml`
+- macOS: `~/Library/Application Support/sync-helper/config.toml`
+- Linux: `~/.config/sync-helper/config.toml`
 
 ## Notes
 

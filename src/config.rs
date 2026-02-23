@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use crate::models::AppConfig;
 
 pub fn config_file_path() -> Result<PathBuf> {
-    let proj_dirs =
-        ProjectDirs::from("com", "rup", "rup").context("Failed to resolve config directory")?;
+    let proj_dirs = ProjectDirs::from("com", "sync-helper", "sync-helper")
+        .context("Failed to resolve config directory")?;
     Ok(proj_dirs.config_dir().join("config.toml"))
 }
 
