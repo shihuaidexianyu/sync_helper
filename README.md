@@ -26,12 +26,20 @@ A small interactive CLI that wraps `rsync` for fast, resumable uploads. It store
 cargo build --release
 ```
 
-Binary will be at `target/release/sync-helper`.
+Binary will be at `target/release/shp`.
+
+Installed command name is `shp` (short alias), while package/repo name remains `sync-helper`.
 
 ## Usage
 
 ```bash
 cargo run
+```
+
+Or run the built binary directly:
+
+```bash
+shp
 ```
 
 On first run, you'll be prompted to add a server profile:
