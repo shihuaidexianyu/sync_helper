@@ -24,6 +24,14 @@
 
 ## 安装
 
+使用 Cargo 直接安装到本机：
+
+```bash
+cargo install --path .
+```
+
+或者先构建 release 版本：
+
 ```bash
 cargo build --release
 ```
