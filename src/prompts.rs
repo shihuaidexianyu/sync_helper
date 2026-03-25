@@ -5,9 +5,14 @@ use std::path::Path;
 
 use crate::config::save_config;
 use crate::models::{
-    AppConfig, ServerProfile, TransferMode, TransferPaths, default_ignore_git_dir, default_ssh_port,
+    AppConfig, FilterMode, ServerProfile, SyncPreset, TransferMode, TransferPaths,
+    default_filter_mode, default_ssh_port, default_sync_preset,
 };
-use crate::transfer::{filter_mode_label, transfer_mode_label, transfer_route_preview};
+use crate::planner::{
+    SyncPlan, compare_mode_label, delete_mode_label, filter_mode_label, path_mode_label,
+    preview_route, source_kind_label, sync_preset_description, sync_preset_label,
+    transfer_mode_label,
+};
 
 pub fn select_server(config: &mut AppConfig, path: &Path) -> Result<usize> {
     loop {
@@ -70,6 +75,8 @@ pub fn create_server_wizard() -> Result<ServerProfile> {
         user,
         host,
         port: default_ssh_port(),
+        push_defaults: None,
+        pull_defaults: None,
         shared_paths: None,
         push_paths: None,
         pull_paths: None,
@@ -105,28 +112,48 @@ pub fn prompt_transfer_inputs(
     mode: TransferMode,
     default_port: u16,
     defaults: Option<&TransferPaths>,
-) -> Result<(u16, String, String, bool, bool)> {
+) -> Result<(u16, TransferPaths)> {
     let local_prompt = match mode {
         TransferMode::Push => "Enter local source path (or drag it here)",
         TransferMode::Pull => "Enter local destination directory",
     };
+    let remote_prompt = match mode {
+        TransferMode::Push => "Remote target path",
+        TransferMode::Pull => "Remote source path",
+    };
     let port = prompt_port(default_port)?;
     let remote_dir = prompt_non_empty_with_optional_default(
-        "Remote directory",
+        remote_prompt,
         defaults.map(|paths| paths.remote_dir.as_str()),
     )?;
     let local_path = prompt_path_with_optional_default(
         local_prompt,
         defaults.map(|paths| paths.local_path.as_str()),
     )?;
-    let (use_gitignore, ignore_git_dir) = prompt_transfer_filters(
+    let sync_preset = prompt_sync_preset(
         mode,
-        defaults.is_some_and(|paths| paths.use_gitignore),
         defaults
-            .map(|paths| paths.ignore_git_dir)
-            .unwrap_or_else(default_ignore_git_dir),
+            .map(|paths| paths.sync_preset)
+            .unwrap_or_else(default_sync_preset),
     )?;
-    Ok((port, local_path, remote_dir, use_gitignore, ignore_git_dir))
+    let filter_mode = prompt_transfer_filter_mode(
+        defaults
+            .map(|paths| paths.effective_filter_mode())
+            .unwrap_or_else(default_filter_mode),
+    )?;
+    let dry_run = prompt_dry_run(defaults.is_some_and(|paths| paths.dry_run))?;
+    Ok((
+        port,
+        TransferPaths {
+            local_path,
+            remote_dir,
+            sync_preset,
+            filter_mode: Some(filter_mode),
+            dry_run,
+            use_gitignore: false,
+            ignore_git_dir: true,
+        },
+    ))
 }
 
 pub fn prompt_reuse_last_settings(
@@ -141,12 +168,11 @@ pub fn prompt_reuse_last_settings(
     print_summary_line("Port", &server.port.to_string());
     print_summary_line(
         "Route",
-        &transfer_route_preview(mode, &last.local_path, &last.remote_dir),
+        &preview_route(mode, &last.local_path, &last.remote_dir),
     );
-    print_summary_line(
-        "Filter",
-        filter_mode_label(mode, last.use_gitignore, last.ignore_git_dir),
-    );
+    print_summary_line("Strategy", sync_preset_label(last.sync_preset));
+    print_summary_line("Filter", filter_mode_label(last.effective_filter_mode()));
+    print_summary_line("Dry run", bool_label(last.dry_run));
     Confirm::new()
         .with_prompt(prompt_text("Reuse these settings?"))
         .default(true)
@@ -154,31 +180,57 @@ pub fn prompt_reuse_last_settings(
         .map_err(Into::into)
 }
 
-pub fn print_transfer_summary(
-    server: &ServerProfile,
-    mode: TransferMode,
-    port: u16,
-    local_path: &str,
-    remote_dir: &str,
-    use_gitignore: bool,
-    ignore_git_dir: bool,
-) {
+pub fn print_transfer_summary(server: &ServerProfile, plan: &SyncPlan) {
     println!();
     println!("{}", style("Transfer summary").cyan().bold());
     print_summary_line("Server", &server_label(server));
-    print_summary_line("Mode", transfer_mode_label(mode));
-    print_summary_line("Port", &port.to_string());
+    print_summary_line("Mode", transfer_mode_label(plan.mode));
+    print_summary_line("Port", &plan.port.to_string());
+    print_summary_line("Local", &plan.local_path);
+    print_summary_line("Remote input", &plan.remote_input);
+    print_summary_line("Resolved remote", &plan.resolved_remote_path);
     print_summary_line(
         "Route",
-        &transfer_route_preview(mode, local_path, remote_dir),
+        &preview_route(plan.mode, &plan.local_path, &plan.resolved_remote_path),
     );
-    print_summary_line(
-        "Filters",
-        filter_mode_label(mode, use_gitignore, ignore_git_dir),
-    );
+    print_summary_line("Source kind", source_kind_label(plan.source_kind));
+    print_summary_line("Path mode", path_mode_label(plan.path_mode));
+    print_summary_line("Strategy", sync_preset_label(plan.policy.preset));
+    print_summary_line("Policy", sync_preset_description(plan.policy.preset));
+    print_summary_line("Compare", compare_mode_label(plan.policy.compare_mode));
+    print_summary_line("Delete extra", delete_mode_label(plan.policy.delete_mode));
+    print_summary_line("Filter", filter_mode_label(plan.filter_mode));
+    print_summary_line("Dry run", bool_label(plan.policy.dry_run));
+
+    if let Some(path) = &plan.remote_mkdir_path {
+        print_summary_line("Remote mkdir", path);
+    }
+    if let Some(path) = &plan.local_filter_file {
+        print_summary_line("Exclude file", &path.display().to_string());
+    }
 }
 
-pub fn confirm_start_transfer() -> Result<bool> {
+pub fn confirm_start_transfer(plan: &SyncPlan) -> Result<bool> {
+    if matches!(
+        plan.policy.preset,
+        SyncPreset::Mirror
+    ) {
+        println!(
+            "{}",
+            style(format!(
+                "Mirror mode will delete extra files under {}.",
+                plan.resolved_remote_path
+            ))
+            .yellow()
+            .bold()
+        );
+    }
+    if plan.policy.dry_run {
+        println!(
+            "{}",
+            style("Dry run is enabled. No files will be modified.").yellow()
+        );
+    }
     Confirm::new()
         .with_prompt(prompt_text("Start transfer now?"))
         .default(true)
@@ -322,37 +374,79 @@ fn prompt_path_with_optional_default(prompt: &str, default: Option<&str>) -> Res
     }
 }
 
-fn prompt_transfer_filters(
-    _mode: TransferMode,
-    default_use_gitignore: bool,
-    default_ignore_git_dir: bool,
-) -> Result<(bool, bool)> {
+fn prompt_sync_preset(mode: TransferMode, default_preset: SyncPreset) -> Result<SyncPreset> {
+    let allow_mirror = matches!(mode, TransferMode::Push);
+    let mut preset_values = vec![SyncPreset::Fast, SyncPreset::Strict];
+    if allow_mirror {
+        preset_values.push(SyncPreset::Mirror);
+    }
+
+    let items: Vec<String> = preset_values
+        .iter()
+        .map(|preset| {
+            format!(
+                "{} {}",
+                style(sync_preset_label(*preset)).green().bold(),
+                style(sync_preset_description(*preset)).dim()
+            )
+        })
+        .collect();
+    let fallback = if allow_mirror || !matches!(default_preset, SyncPreset::Mirror) {
+        default_preset
+    } else {
+        SyncPreset::Strict
+    };
+    let default_index = preset_values
+        .iter()
+        .position(|preset| *preset == fallback)
+        .unwrap_or(1);
+
+    let selection = Select::new()
+        .with_prompt(prompt_text("Sync strategy"))
+        .items(&items)
+        .default(default_index)
+        .interact()?;
+    Ok(preset_values[selection])
+}
+
+fn prompt_transfer_filter_mode(default_filter_mode: FilterMode) -> Result<FilterMode> {
+    let filter_values = [
+        FilterMode::None,
+        FilterMode::ExcludeGitDir,
+        FilterMode::LocalGitignore,
+        FilterMode::LocalGitignoreAndGitDir,
+    ];
     let items = [
         format!("{}", style("No extra filtering").dim()),
-        format!("{}", style("Apply local .gitignore rules").cyan()),
         format!("{}", style("Exclude .git/ only").yellow()),
         format!(
             "{}",
-            style("Apply local .gitignore + exclude .git/").green()
+            style("Apply local .gitignore as rsync exclude rules").cyan()
+        ),
+        format!(
+            "{}",
+            style("Apply local .gitignore as rsync exclude rules + exclude .git/")
+                .green()
         ),
     ];
-    let default_index = match (default_use_gitignore, default_ignore_git_dir) {
-        (false, false) => 0,
-        (true, false) => 1,
-        (false, true) => 2,
-        (true, true) => 3,
-    };
+    let default_index = filter_values
+        .iter()
+        .position(|mode| *mode == default_filter_mode)
+        .unwrap_or(1);
     let selection = Select::new()
         .with_prompt(prompt_text("Transfer filtering"))
         .items(&items)
         .default(default_index)
         .interact()?;
-    Ok(match selection {
-        0 => (false, false),
-        1 => (true, false),
-        2 => (false, true),
-        _ => (true, true),
-    })
+    Ok(filter_values[selection])
+}
+
+fn prompt_dry_run(default_dry_run: bool) -> Result<bool> {
+    Confirm::new()
+        .with_prompt(prompt_text("Preview only (dry run)?"))
+        .default(default_dry_run)
+        .interact()
+        .map_err(Into::into)
 }
 
 fn sanitize_path(input: &str) -> String {
@@ -377,4 +471,8 @@ fn print_summary_line(label: &str, value: &str) {
         style(format!("{label}:")).blue().bold(),
         style(value).green().bold()
     );
+}
+
+fn bool_label(value: bool) -> &'static str {
+    if value { "yes" } else { "no" }
 }

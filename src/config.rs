@@ -4,7 +4,7 @@ use directories::ProjectDirs;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::models::AppConfig;
+use crate::models::{AppConfig, FilterMode, TransferPaths};
 
 pub fn config_file_path() -> Result<PathBuf> {
     let proj_dirs = ProjectDirs::from("com", "sync-helper", "sync-helper")
@@ -49,11 +49,35 @@ pub fn save_config(path: &Path, config: &AppConfig) -> Result<()> {
 
 fn migrate_legacy_paths(config: &mut AppConfig) {
     for server in &mut config.servers {
-        if server.shared_paths.is_none() {
-            server.shared_paths = server
+        if server.push_defaults.is_none() {
+            server.push_defaults = server
                 .push_paths
                 .clone()
-                .or_else(|| server.pull_paths.clone());
+                .or_else(|| server.shared_paths.clone());
         }
+        if server.pull_defaults.is_none() {
+            server.pull_defaults = server
+                .pull_paths
+                .clone()
+                .or_else(|| server.shared_paths.clone());
+        }
+
+        if let Some(defaults) = server.push_defaults.as_mut() {
+            migrate_transfer_defaults(defaults);
+        }
+        if let Some(defaults) = server.pull_defaults.as_mut() {
+            migrate_transfer_defaults(defaults);
+        }
+    }
+}
+
+fn migrate_transfer_defaults(defaults: &mut TransferPaths) {
+    if defaults.filter_mode.is_none() {
+        defaults.filter_mode = Some(match (defaults.use_gitignore, defaults.ignore_git_dir) {
+            (false, false) => FilterMode::None,
+            (true, false) => FilterMode::LocalGitignore,
+            (false, true) => FilterMode::ExcludeGitDir,
+            (true, true) => FilterMode::LocalGitignoreAndGitDir,
+        });
     }
 }
